@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -32,6 +33,8 @@ Usage:
   gofer contacts                  list pinned contacts
   gofer contacts add <name> <id>  pin a username to a peer ID
   gofer contacts rm <name>        remove a contact
+  gofer update                    update gofer to the latest release
+  gofer version                   show the installed version
 `
 
 func main() {
@@ -39,6 +42,7 @@ func main() {
 		fmt.Print(usage)
 		os.Exit(2)
 	}
+	cleanupOldBinary()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -55,6 +59,8 @@ func main() {
 		err = cmdSend(ctx, args)
 	case "contacts":
 		err = cmdContacts(args)
+	case "update", "upgrade":
+		err = cmdUpdate()
 	case "version", "--version":
 		fmt.Println("gofer", version)
 	case "help", "-h", "--help":
@@ -161,12 +167,12 @@ func cmdReceive(ctx context.Context, args []string) error {
 
 	fmt.Println("Connecting to the peer network…")
 	if err := n.Bootstrap(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
-	// Wait (briefly) for a relay reservation so peers behind NAT can find us.
-	for i := 0; i < 120 && !hasRelayAddr(n.Host) && ctx.Err() == nil; i++ {
-		time.Sleep(250 * time.Millisecond)
-	}
+	fmt.Printf("✓ Online as %s (peer %s)\n  Saving to %s — Ctrl+C to stop.\n", cfg.Username, n.Host.ID(), *dir)
 
 	sub, err := n.Host.EventBus().Subscribe(new(event.EvtLocalAddressesUpdated))
 	if err != nil {
@@ -174,23 +180,39 @@ func cmdReceive(ctx context.Context, args []string) error {
 	}
 	defer sub.Close()
 
-	announce := func() {
-		c, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	announce := func() error {
+		// The DHT walk rarely "completes" (many public peers are unreachable); on deadline it
+		// still stores the record with the closest peers found so far, which is what we want.
+		c, cancel := context.WithTimeout(ctx, 40*time.Second)
 		defer cancel()
-		if err := n.DHT.Provide(c, userKey(cfg.Username), true); err != nil && ctx.Err() == nil {
-			fmt.Fprintln(os.Stderr, "warning: announce failed:", err)
+		err := n.DHT.Provide(c, userKey(cfg.Username), true)
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil
 		}
+		return err
 	}
-	announce()
-	if *verbose {
-		for _, a := range n.Host.Addrs() {
-			fmt.Println("  ", a)
-		}
-	}
-	fmt.Printf("✓ Online as %s (peer %s)\n  Saving to %s — Ctrl+C to stop.\n", cfg.Username, n.Host.ID(), *dir)
 
-	// A fresh node's first announce often reaches suboptimal DHT peers; repeat it soon.
 	go func() {
+		fmt.Printf("  Announcing %q so others can find you…\n", cfg.Username)
+		// Give the relay reservation a moment so NAT'd senders get a usable address.
+		for i := 0; i < 60 && !hasRelayAddr(n.Host) && ctx.Err() == nil; i++ {
+			time.Sleep(250 * time.Millisecond)
+		}
+		err := announce()
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "  warning: announce incomplete, retrying shortly:", err)
+		} else {
+			fmt.Println("  ✓ Findable — others can now `gofer send <file>", cfg.Username+"`")
+		}
+		if *verbose {
+			for _, a := range n.Host.Addrs() {
+				fmt.Println("    ", a)
+			}
+		}
+		// A fresh node's first announce often reaches suboptimal DHT peers; repeat it soon.
 		for _, d := range []time.Duration{20 * time.Second, time.Minute, 3 * time.Minute} {
 			select {
 			case <-ctx.Done():

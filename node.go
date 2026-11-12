@@ -86,6 +86,7 @@ func startNode(ctx context.Context, key crypto.PrivKey, o nodeOptions) (*Node, e
 	}
 	d, err := dht.New(h,
 		dht.Mode(dht.ModeClient),
+		dht.EnableOptimisticProvide(),
 		dht.BootstrapPeers(dht.GetDefaultBootstrapPeerAddrInfos()...))
 	if err != nil {
 		h.Close()
