@@ -21,7 +21,7 @@ asset="gofer_${os}_${arch}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "Downloading $asset…"
+echo "Downloading ${asset}..."
 curl -fsSL "$BASE/$asset" -o "$tmp/gofer"
 curl -fsSL "$BASE/checksums.txt" -o "$tmp/checksums.txt"
 
@@ -41,7 +41,7 @@ dir="/usr/local/bin"
 if [ -d "$dir" ] && [ -w "$dir" ]; then
   mv "$tmp/gofer" "$dir/gofer"
 elif command -v sudo >/dev/null 2>&1; then
-  echo "Installing to $dir (needs your password)…"
+  echo "Installing to ${dir} (needs your password)..."
   sudo mkdir -p "$dir"
   sudo mv "$tmp/gofer" "$dir/gofer"
 else
