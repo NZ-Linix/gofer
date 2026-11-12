@@ -1,5 +1,5 @@
 # gofer installer for Windows:
-#   irm https://raw.githubusercontent.com/NZ-Linix/gofer/main/install.ps1 | iex
+#   irm https://github.com/NZ-Linix/gofer/releases/latest/download/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 

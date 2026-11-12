@@ -1,8 +1,10 @@
-package main
+// Package p2p wraps the libp2p host and the public DHT used for discovery.
+package p2p
 
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,12 +25,14 @@ type Node struct {
 	DHT  *dht.IpfsDHT
 }
 
-type nodeOptions struct {
-	port      int
-	reachable bool // receiver: obtain relay reservations so NAT'd peers can be reached for hole punching
+type Options struct {
+	Port int
+	// Reachable makes the node obtain relay reservations so peers behind NAT can
+	// reach it for hole punching. Used by receivers.
+	Reachable bool
 }
 
-func startNode(ctx context.Context, key crypto.PrivKey, o nodeOptions) (*Node, error) {
+func Start(key crypto.PrivKey, o Options) (*Node, error) {
 	var (
 		mu  sync.Mutex
 		kad *dht.IpfsDHT
@@ -63,15 +67,15 @@ func startNode(ctx context.Context, key crypto.PrivKey, o nodeOptions) (*Node, e
 	opts := []libp2p.Option{
 		libp2p.Identity(key),
 		libp2p.ListenAddrStrings(
-			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", o.port),
-			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", o.port),
-			fmt.Sprintf("/ip6/::/tcp/%d", o.port),
-			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", o.port),
+			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", o.Port),
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", o.Port),
+			fmt.Sprintf("/ip6/::/tcp/%d", o.Port),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", o.Port),
 		),
 		libp2p.NATPortMap(),
 		libp2p.EnableHolePunching(),
 	}
-	if o.reachable {
+	if o.Reachable {
 		opts = append(opts,
 			libp2p.ForceReachabilityPrivate(),
 			libp2p.EnableAutoRelayWithPeerSource(peerSource,
@@ -136,15 +140,33 @@ func (n *Node) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-// userKey is the DHT key under which a username is announced.
-func userKey(username string) cid.Cid {
-	sum := sha256.Sum256([]byte("gofer/user/v1/" + username))
-	m, _ := mh.Encode(sum[:], mh.SHA2_256)
-	return cid.NewCidV1(cid.Raw, m)
+// Announce publishes that this node answers for username.
+func (n *Node) Announce(ctx context.Context, username string) error {
+	// The DHT walk rarely "completes" (many public peers are unreachable); on deadline it
+	// still stores the record with the closest peers found so far, which is what we want.
+	c, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	err := n.DHT.Provide(c, UserKey(username), true)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return nil
+	}
+	return err
 }
 
-func hasRelayAddr(h host.Host) bool {
-	for _, a := range h.Addrs() {
+// WaitForRelay waits up to max for a relay address to appear.
+func (n *Node) WaitForRelay(ctx context.Context, max time.Duration) {
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) && !n.hasRelayAddr() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func (n *Node) hasRelayAddr() bool {
+	for _, a := range n.Host.Addrs() {
 		if strings.Contains(a.String(), "/p2p-circuit") {
 			return true
 		}
@@ -152,10 +174,9 @@ func hasRelayAddr(h host.Host) bool {
 	return false
 }
 
-func shortID(id peer.ID) string {
-	s := id.String()
-	if len(s) > 12 {
-		return "…" + s[len(s)-8:]
-	}
-	return s
+// UserKey is the DHT key under which a username is announced.
+func UserKey(username string) cid.Cid {
+	sum := sha256.Sum256([]byte("gofer/user/v1/" + username))
+	m, _ := mh.Encode(sum[:], mh.SHA2_256)
+	return cid.NewCidV1(cid.Raw, m)
 }

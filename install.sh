@@ -1,6 +1,6 @@
 #!/bin/sh
 # gofer installer for macOS and Linux:
-#   curl -fsSL https://raw.githubusercontent.com/NZ-Linix/gofer/main/install.sh | sh
+#   curl -fsSL https://github.com/NZ-Linix/gofer/releases/latest/download/install.sh | sh
 set -eu
 
 REPO="NZ-Linix/gofer"
